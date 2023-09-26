@@ -1,0 +1,177 @@
+---
+title: "Significance testing for gene espression (RNAseq)"
+output: html_document
+---
+
+```{r simulation_options, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(report)
+library(DESeq2)
+library(dplyr)
+library(ggplot2)
+library(GenomicRanges)
+library(RColorBrewer)
+library(pheatmap)
+library(stringr)
+opts_chunk$set(dpi = 72,
+               warning = FALSE, message = FALSE, prompt = TRUE, cache = FALSE)
+set.seed(123)
+```
+last changed: `r Sys.Date()`
+
+---
+
+Sample coverage
+===
+
+## Generate DESeq data set
+
+First, the new coverage file is loaded using `read.table`. Then, the columns 
+which contain the information about the gene expression are filtered . Next, 
+the gene ID's are added as row names.
+```{r data1}
+m.raw <- read.table("./Data/count_table.txt", header = T)
+head(m.raw)
+
+m.RNAseq <- m.raw[, 7:ncol(m.raw)]
+rownames(m.RNAseq) <- m.raw$Geneid
+colnames(m.RNAseq) <- 
+  str_split_i(colnames(m.RNAseq), "bams.", 2) %>% 
+  str_split_i(".Ali", 1)
+colnames(m.RNAseq)[colnames(m.RNAseq) == "Exp1_0"] <- "Exp1_0h"
+colnames(m.RNAseq)[colnames(m.RNAseq) == "Exp2_0"] <- "Exp2_0h"
+head(m.RNAseq)
+```
+
+---
+
+For generating a DESeq data set a `colData` file is required containing 
+information about the experiment. Note that the parameter `time` is required to 
+be `numeric` which is essential for a meaningful significance testing. 
+Furthermore, the sample Exp2_0h was dropped, due to being an outlier. The 
+required information were gathered in a matrix. The matrix and count data were 
+then ordered for the parameter `Time` and `replica`.
+```{r colData}
+info.RNAseq <- read.csv2("./Data/exp_design.csv")
+rownames(info.RNAseq) <- info.RNAseq$ID
+rownames(info.RNAseq)[rownames(info.RNAseq) == "Exp1_0"] <- "Exp1_0h"
+rownames(info.RNAseq)[rownames(info.RNAseq) == "Exp2_0"] <- "Exp2_0h"
+info.RNAseq$replica <- as.factor(info.RNAseq$replica)
+info.RNAseq$Time <- as.double(info.RNAseq$Time)
+paged_table(info.RNAseq)
+
+m.RNAseq <- subset(m.RNAseq, select = -Exp2_0h)
+info.RNAseq <- info.RNAseq[-which(rownames(info.RNAseq) == "Exp2_0h"), ]
+
+colData.RNAseq <- arrange(info.RNAseq, Time, replica)
+paged_table(colData.RNAseq)
+
+m.RNAseq <- m.RNAseq[ ,rownames(colData.RNAseq)]
+head(m.RNAseq)
+```
+
+---
+
+Now that we have all required files, the DESeq data set can be constructed and 
+the parameter `design` takes the variables of the underlying model.
+```{r dds}
+RNAseq.coverage <- DESeqDataSetFromMatrix(m.RNAseq, 
+                                     colData.RNAseq, 
+                                     design = ~ Time)
+head(RNAseq.coverage)
+
+saveRDS(RNAseq.coverage, file = "./Data/raw_RNAseq.rds")
+```
+
+---
+
+## Regularized-log transformation and PCA
+
+Next, the data was scaled using the `rlog` transformation to stabilize the data 
+against variance within the data.
+```{r rlog}
+rlog.RNAseq <- rlog(RNAseq.coverage, blind = F)
+head(rlog.RNAseq)
+
+saveRDS(rlog.RNAseq, file = "./Data/rlog_RNAseq.rds")
+```
+
+---
+
+To validate the data the rlog-transformed data was used to plot a principal 
+component analysis (PCA) and a heatmap with hierachial clustering.
+```{r PCA, fig.width = 12, fig.height = 10}
+pca.RNAseq <- plotPCA(rlog.RNAseq, 
+                    intgroup = c("replica", "Time"), 
+                    returnData = T)
+per.Var <- round(100 * attr(pca.RNAseq, "percentVar"))
+
+ggplot(pca.RNAseq, aes(PC1, PC2, color = Time %>% as.factor(), shape = replica, label = name)) +
+  geom_point(size = 3) +
+  labs(x = paste0("PC1: ", per.Var[1], "% variance"), 
+       y = paste0("PC2: ", per.Var[2], "% variance"),
+       color = "time",
+       main = "PCA for RNAseq after infection in hours") +
+  theme_bw()
+```
+
+```{r heat, fig.width = 12, fig.height = 10}
+sample.dist <- dist(t(assay(rlog.RNAseq)))
+m.dist <- sample.dist %>% as.matrix()
+colnames(m.dist) <- NULL
+
+col <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+
+plot.heat <- pheatmap(m.dist, 
+                      clustering_distance_rows = sample.dist, 
+                      clustering_distance_cols = sample.dist, 
+                      col = col)
+```
+
+---
+
+## Significance testing (Likelihood ratio test - LRT)
+
+To find significant changes in gene expression a likelihood ratio test (LRT) was 
+used. This test compares 2 models, the full model (M ~ time) and the 
+simpler model (M(s) ~ 1). This results in genes which show significant difference 
+between those 2 models, in this case only genes which significantly affect the 
+larger model will score a low enough p-values. The output was then used to filter 
+the rlog data for significant peaks (adjusted p value <= 0.05).
+```{r LRT}
+RNAseq.LRT <- DESeq(RNAseq.coverage, test = "LRT", reduced = ~ 1)
+head(RNAseq.LRT)
+
+saveRDS(RNAseq.LRT, file = "./Data/LRT_RNAseq_sig.rds")
+
+res <- results(RNAseq.LRT)
+head(res)
+
+res.sig <- res[which(res$padj <= 0.05), ]
+
+rlog.RNAseq.sig <- rlog.RNAseq[rownames(res.sig), ]
+
+saveRDS(rlog.RNAseq.sig, file = "./Data/rlog_RNAseq_sig.rds")
+```
+
+---
+
+References - packages
+---------------------
+
+```{r packages, echo=FALSE, results='asis'}
+cite_packages()
+```
+
+---
+
+Session Information
+-------------------
+
+The following versions of R and R packages were used to generate the report
+above:
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```

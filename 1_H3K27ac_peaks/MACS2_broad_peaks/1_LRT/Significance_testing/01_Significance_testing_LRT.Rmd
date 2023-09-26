@@ -1,0 +1,187 @@
+---
+title: "Significance testing for H3K27ac peaks"
+output: html_document
+---
+
+```{r simulation_options, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(report)
+library(IRanges)
+library(dplyr)
+library(stringr)
+library(DESeq2)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(pheatmap)
+opts_chunk$set(dpi = 72,
+               warning = FALSE, message = FALSE, prompt = TRUE, cache = FALSE)
+set.seed(123)
+```
+last changed: `r Sys.Date()`
+
+---
+
+Sample coverage
+===
+
+## Generate DESeq data set
+
+First, the new coverage file is loaded using `read.table`. Then, the columns 
+which contain the information about the peak position are combined into one 
+vector (`seq.names`). Next, only the values of the coverage file are used and
+the peak position is annotated as row names.
+```{r data1}
+cov.H3ac <- read.table("./Data/H3K27ac_coverage.tabular", 
+                       header = T)
+
+head(cov.H3ac)
+
+seq.names <- apply(cov.H3ac[, 1:3], 1, function(row) {paste(row[1], 
+                                                         ":", 
+                                                         row[2] %>% as.integer(), 
+                                                         "-", 
+                                                         row[3] %>% as.integer(), 
+                                                         sep = "")})
+
+m.H3ac <- cov.H3ac[ , -which(names(cov.H3ac) %in% c("chr", "start", "end"))]
+rownames(m.H3ac) <- seq.names
+colnames(m.H3ac) <- str_split_i(colnames(m.H3ac), ".bam", 1)
+
+head(m.H3ac)
+```
+
+---
+
+For generating a DESeq data set a `colData` file is required containing 
+information about the experiment. Note that the parameter `time` is required to 
+be `numeric` which is essential for a meaningful significance testing. Thus, the 
+required information were gathered in a matrix, as follows:
+```{r colData}
+colData.H3ac <- matrix(NA, nrow = 22, ncol = 3) %>% as.data.frame()
+rownames(colData.H3ac) <- colnames(m.H3ac)
+colnames(colData.H3ac) <- c("construct", "replica", "time")
+colData.H3ac$construct <- str_split_i(colnames(m.H3ac), "_", 1) %>% 
+  as.factor()
+colData.H3ac$replica <- str_split_i(colnames(m.H3ac), "_", 3) %>% 
+  as.factor()
+colData.H3ac$time <- str_split_i(colnames(m.H3ac), "T", 2) %>% 
+  str_split_i( "h", 1) %>% 
+  as.numeric()
+
+colData.H3ac <- arrange(colData.H3ac, construct, time, replica)
+
+paged_table(colData.H3ac)
+
+m.H3ac <- m.H3ac[ , rownames(colData.H3ac)]
+```
+
+---
+
+Now that we have all required files, the DESeq data set can be constructed and 
+the parameter `design` takes the parameters for the underlying model.
+```{r clus_3}
+H3ac.coverage <- DESeqDataSetFromMatrix(m.H3ac, 
+                                        colData.H3ac, 
+                                        design = ~ construct + replica + time)
+
+saveRDS(H3ac.coverage, file = "./Data/raw_H3K27ac.rds")
+
+head(H3ac.coverage)
+```
+
+---
+
+## Regularized-log transformation and PCA
+
+Next, the data was scaled using the `rlog` transformation to stabilize the data 
+against variance within the data.
+```{r rlog}
+rlog.H3ac <- rlog(H3ac.coverage, blind = F)
+
+saveRDS(rlog.H3ac, file = "./Data/rlog_H3K27ac.rds")
+
+head(rlog.H3ac)
+```
+
+---
+
+To validate the data the rlog-transformed data was used to plot a principal 
+component analysis (PCA) and a heatmap with hierachial clustering.
+```{r PCA, fig.width = 12, fig.height = 10}
+pca.H3ac <- plotPCA(rlog.H3ac, 
+                    intgroup = c("construct", "time"), 
+                    returnData = T)
+per.Var <- round(100 * attr(pca.H3ac, "percentVar"))
+
+ggplot(pca.H3ac, aes(PC1, PC2, color = time %>% as.factor(), shape = construct, label = name)) +
+  geom_point(size = 3) +
+  geom_text_repel(size = 2.5) +
+  labs(x = paste0("PC1: ", per.Var[1], "% variance"), 
+       y = paste0("PC2: ", per.Var[2], "% variance"),
+       color = "time",
+       main = "PCA for H3K27ac after infection in hours") +
+  theme_bw()
+```
+
+```{r heat, fig.width = 12, fig.height = 10}
+sample.dist <- dist(t(assay(rlog.H3ac)))
+m.dist <- sample.dist %>% as.matrix()
+colnames(m.dist) <- NULL
+
+col <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+
+plot.heat <- pheatmap(m.dist, 
+                      clustering_distance_rows = sample.dist, 
+                      clustering_distance_cols = sample.dist, 
+                      col = col)
+```
+
+---
+
+## Significance testing (Likelihood ratio test - LRT)
+
+To find significant peaks a likelihood ratio test (LRT) was used. This test 
+compares 2 models, the full model (M ~ construct + replica + time) and the 
+simpler model (M(s) ~ construct + replica). This results in peaks which show 
+significant difference between those 2 models, in this case only peaks which 
+significantly affect the larger model will score a low enough p-values. The 
+output was then used to filter the rlog data for significant peaks (adjusted p 
+value <= 0.05).
+```{r LRT}
+H3ac.LRT <- DESeq(H3ac.coverage, test = "LRT", reduced = ~ construct + replica)
+
+head(H3ac.LRT)
+
+res <- results(H3ac.LRT)
+
+head(res)
+
+res.sig <- res[which(res$padj <= 0.05), ]
+
+rlog.H3ac.sig <- rlog.H3ac[rownames(res.sig), ]
+
+saveRDS(rlog.H3ac.sig, file = "./Data/rlog_H3K27ac_sig.rds")
+```
+
+---
+
+References - packages
+---------------------
+
+```{r packages, echo=FALSE, results='asis'}
+cite_packages()
+```
+
+---
+
+Session Information
+-------------------
+
+The following versions of R and R packages were used to generate the report
+above:
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```

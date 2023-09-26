@@ -1,0 +1,358 @@
+---
+title: "Correlation of enriched genes (Metaverse) with H3K27ac"
+output: html_document
+---
+
+```{r simulation_options, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(rmarkdown)
+library(report)
+library(GenomicFeatures)
+library(dplyr)
+library(ggplot2)
+library(DESeq2)
+library(readxl)
+library(stringr)
+library(forcats)
+
+opts_chunk$set(fig.width = 10, fig.height = 10, dpi = 72,
+               warning = FALSE, message = FALSE, prompt = TRUE, cache = FALSE)
+set.seed(123)
+```
+last changed: `r Sys.Date()`
+
+---
+
+Metascape Enrichment
+===
+
+## Data processing
+
+At first, the correlation matrices are required and for simplicity the peak 
+positions are changed to gene symbols.
+```{r m.data}
+#H3K27ac:
+m.H3.1ac <- readRDS("./../Compare_H3K27ac_RNAseq/Data/m_H3.1K27ac_median.rds")
+head(m.H3.1ac)
+
+m.H3.3ac <- readRDS("./../Compare_H3K27ac_RNAseq/Data/m_H3.3K27ac_median.rds")
+head(m.H3.3ac)
+
+peaks.H3ac <- readRDS("./../Compare_H3K27ac_RNAseq/Data/H3K27ac_coding_peaks_1kb.rds") %>% 
+  as.data.frame()
+peaks.H3ac <- mutate(peaks.H3ac, peak_pos = paste0(peaks.H3ac$chr, ":", peaks.H3ac$start, "-", peaks.H3ac$end))
+peaks.H3ac <- peaks.H3ac[order(peaks.H3ac$distanceToTSS %>% as.integer() %>% abs(), decreasing = F), ]
+peaks.H3ac <- peaks.H3ac[!duplicated(peaks.H3ac$gene_symbol),]
+peaks.H3ac <- peaks.H3ac[!is.na(peaks.H3ac$gene_symbol), ]
+rownames(peaks.H3ac) <- peaks.H3ac$gene_symbol
+paged_table(peaks.H3ac)
+
+#RNAseq:
+m.RNAseq <- readRDS("./../Compare_H3K27ac_RNAseq/Data/m_RNAseq_median.rds")
+head(m.RNAseq)
+```
+
+---
+
+The enrichment analysis was performed with 
+[Metascape](https://metascape.org/gp/index.html#/main/step1). Here, a list with 
+all genes for each cluster is required which was uploaded and used to perform 
+the enrichment by cluster (NAs need to be excluded).
+```{r clus.data}
+clus.genes <- readRDS("./../Enrichment_analysis/Data/RNAseq_genes_cluster.rds")
+lapply(clus.genes, head)
+
+# make data.frame with required structure:
+l1 <- length(clus.genes[[1]])
+l2 <- length(clus.genes[[2]])
+l3 <- length(clus.genes[[3]])
+l4 <- length(clus.genes[[4]])
+
+max.length <- max(l1, l2, l3, l4)
+
+meta.genes <- data.frame(cluster_1 = c(clus.genes[[1]], rep(NA, max.length - l1)), 
+                         cluster_2 = c(clus.genes[[2]], rep(NA, max.length - l2)),
+                         cluster_3 = c(clus.genes[[3]], rep(NA, max.length - l3)),
+                         cluster_4 = c(clus.genes[[4]], rep(NA, max.length - l4)))
+
+paged_table(meta.genes)
+```
+
+---
+
+## Metascape results
+
+Here, the summarized results of the Metascape enrichment analysis are shown:
+```{r, fig.align="center", fig.cap=c("Metascape enrichment results"), echo=FALSE}
+knitr::include_graphics("./Data/HeatmapSelectedGO.pdf")
+```
+
+---
+
+Here, the enrichment results are shown as a table:
+```{r meta.data}
+meta.data <- read_excel("./Data/metascape_result.xlsx") %>% as.data.frame()
+rownames(meta.data) <- meta.data$original_id
+
+paged_table(meta.data)
+
+meta.enrich <- read_excel("./Data/metascape_result.xlsx", sheet = 2)
+
+paged_table(meta.enrich)
+```
+
+---
+
+Correlation Analysis
+===
+
+## Find enriched genes in top pathways
+
+The top hits of the enrichment were then used to get the enriched genes in the 
+respective pathway. For this the results table of the Metascape enrichment was 
+used.
+```{r pw.data}
+genes.hsv.infec <- str_split_1(meta.enrich[2, "Symbols"] %>% as.character(), ",") 
+
+genes.cell.resp.stress <-  str_split_1(meta.enrich[15, "Symbols"] %>% as.character(), ",")
+
+genes.TNF.sign.pw <-  str_split_1(meta.enrich[25, "Symbols"] %>% as.character(), ",")
+```
+
+---
+
+These gene list were then used to construct a data frame which contains 
+information about if there is a significant H3K27ac peak or not. 
+```{r pw.peak}
+RNAseq.genes <- data.frame(ensembl = meta.data$original_id, symbol = meta.data$`Gene Symbol`)
+rownames(RNAseq.genes) <- RNAseq.genes$symbol
+
+corr.peaks <- ifelse(RNAseq.genes$symbol == peaks.H3ac[RNAseq.genes$symbol, "gene_symbol"], 
+                     peaks.H3ac[RNAseq.genes$symbol, "peak_pos"], 
+                     NA)
+
+corr.T.F <- ifelse(is.na(corr.peaks), "No", "Yes")
+
+RNAseq.genes <- mutate(RNAseq.genes, peaks = corr.peaks, corr_peak = corr.T.F %>% as.factor)
+
+pw.m.RNAseq <- rbind(RNAseq.genes[genes.hsv.infec ,], 
+                    RNAseq.genes[genes.cell.resp.stress ,], 
+                    RNAseq.genes[genes.TNF.sign.pw ,])
+
+pw <- c(rep("Herpes simplex virus 1 infection", length(genes.hsv.infec)),
+        rep("Regulation of cellular response to stress", length(genes.cell.resp.stress)),
+        rep("TNF signaling pathway", length(genes.TNF.sign.pw)))
+
+pw.m.RNAseq <- mutate(pw.m.RNAseq, pathway = pw)
+
+paged_table(pw.m.RNAseq)
+```
+
+---
+
+The results were then plotted as follows:
+```{r barplot}
+ggplot(pw.m.RNAseq) +
+  geom_bar(aes(y = pathway, fill = corr_peak), position = "fill", orientation = "y") +
+  labs(y = "", fill = "H3K27ac peak") +
+  theme_bw()
+```
+
+---
+
+## Calculate Correlation
+
+These pathways were then used to calculate the correlation of the respective 
+gene expression with the H3K27ac.
+```{r cor}
+corr.H3.1 <- corr.H3.3 <- list(HSV = NA, CRS = NA, TNF = NA)
+
+list.pw <- list(genes.hsv.infec, genes.cell.resp.stress, genes.TNF.sign.pw)
+
+for (pw in 1:3) {
+  corr.all.H3.1 <- corr.all.H3.3 <- c()
+  curr.genes <- list.pw[[pw]]
+  curr.ensembl <- pw.m.RNAseq[curr.genes, "ensembl"]
+  curr.peaks <- pw.m.RNAseq[curr.genes, "peaks"]
+  for (i in 1:length(list.pw[[pw]])) {
+    if (is.na(pw.m.RNAseq[curr.genes[i], "peaks"]) == T) {
+      curr.corr.H3.1 <- NA
+      curr.corr.H3.3 <- NA
+    }
+    else {
+      curr.corr.H3.1 <- cor(m.H3.1ac[curr.peaks[i], ], m.RNAseq[curr.ensembl[i], ], method = "pearson")
+      curr.corr.H3.3 <- cor(m.H3.3ac[curr.peaks[i], ], m.RNAseq[curr.ensembl[i], ], method = "pearson")
+    }
+  corr.all.H3.1 <- c(corr.all.H3.1, curr.corr.H3.1)
+  corr.all.H3.3 <- c(corr.all.H3.3, curr.corr.H3.3)
+  }
+names(corr.all.H3.1) <- names(corr.all.H3.3) <- curr.genes
+corr.H3.1[[pw]] <- corr.all.H3.1
+corr.H3.3[[pw]] <- corr.all.H3.3
+}
+```
+
+---
+
+## Overview of correlation results
+
+Next, a data frame was constructed containing all the required information to 
+plot correlation results. These data was again annotated to the respective 
+construct (H3.1 or H3.3).
+```{r df.cor}
+# construct dataframe for each of the constructs
+pw.corr.RNAseq <- mutate(rbind(pw.m.RNAseq, pw.m.RNAseq), 
+                         R = c(corr.H3.1[["HSV"]], corr.H3.1[["CRS"]], corr.H3.1[["TNF"]], 
+                               corr.H3.3[["HSV"]], corr.H3.3[["CRS"]], corr.H3.3[["TNF"]]), 
+                         experiment = rep(c("H3.1K27ac", "H3.3K27ac"), each = nrow(pw.m.RNAseq)) %>% as.factor(), 
+                         info.corr = NA)
+
+pw.corr.RNAseq$symbol <- pw.corr.RNAseq$symbol %>% as.factor
+pw.corr.RNAseq$pathway <- pw.corr.RNAseq$pathway %>% as.factor
+
+# add factor for corr:
+pw.corr.RNAseq[which(pw.corr.RNAseq$corr_peak == "No"), "info.corr"] <- "no peak"
+pw.corr.RNAseq[which(pw.corr.RNAseq$R %>% abs() <= 0.7), "info.corr"] <- "-0.7 < R < 0.7"
+pw.corr.RNAseq[which(pw.corr.RNAseq$R <= -0.7), "info.corr"] <- "R <= -0.7"
+pw.corr.RNAseq[which(pw.corr.RNAseq$R >= 0.7), "info.corr"] <- "R >= 0.7"
+pw.corr.RNAseq$info.corr <- pw.corr.RNAseq$info.corr %>% as.factor()
+
+paged_table(pw.corr.RNAseq)
+```
+
+---
+
+To plot the data as a pie chart the counts of the certain events are required, 
+which were calculated as follows:
+```{r df.pie}
+pw.corr.H3.1 <- pw.corr.RNAseq[which(pw.corr.RNAseq$experiment == "H3.1K27ac"), ]
+pw.corr.H3.3 <- pw.corr.RNAseq[which(pw.corr.RNAseq$experiment == "H3.3K27ac"), ]
+
+pie.RNAseq <- data.frame(count = c(
+  length(which(pw.corr.H3.1$info.corr == "no peak")),
+  length(which(pw.corr.H3.1$info.corr == "-0.7 < R < 0.7")),
+  length(which(pw.corr.H3.1$info.corr == "R <= -0.7")),
+  length(which(pw.corr.H3.1$info.corr == "R >= 0.7")),
+  length(which(pw.corr.H3.3$info.corr == "no peak")),
+  length(which(pw.corr.H3.3$info.corr == "-0.7 < R < 0.7")),
+  length(which(pw.corr.H3.3$info.corr == "R <= -0.7")),
+  length(which(pw.corr.H3.3$info.corr == "R >= 0.7"))),
+  group = rep(c("no peak", "-0.7 < R < 0.7", "R <= -0.7", "R >= 0.7"), 1),
+  experiment = rep(c("H3.1K27ac", "H3.3K27ac"), each = 4))
+
+paged_table(pie.RNAseq)
+```
+
+---
+
+The results were then plotted as a pie chart.
+```{r pie}
+ggplot(pie.RNAseq) +
+  geom_bar(aes(x = "", y = count, fill = group), 
+           stat = "identity",
+           position = "fill",
+           width = 1, 
+           color = "white") +
+  coord_polar("y", start = 0) +
+  labs(x = "", y = "", 
+       title = "Correlation between RNAseq and H3K27ac", 
+       fill = "Correlation") +
+  facet_wrap(~ experiment) +
+  theme_minimal()
+```
+
+---
+
+## Correlation by pathway
+
+To show the correlation of each gene in the analyzed pathways, only those genes 
+with a correlation of R >= 0.7 or <= -0.7 were used. These were selected and 
+ordered as follows:
+```{r pw.corr.data}
+# filter for R >= 0.7 / <= -0.7:
+pw.corr0.7 <- which(pw.corr.H3.1$R %>% abs() >= 0.7 | pw.corr.H3.3$R %>% abs() >= 0.7)
+
+pw.corr0.7.H3.1 <- pw.corr.H3.1[pw.corr0.7 ,]
+pw.corr0.7.H3.3 <- pw.corr.H3.3[pw.corr0.7 ,]
+
+pw.corr.0.7.RNAseq <- rbind(pw.corr0.7.H3.1, pw.corr0.7.H3.3)
+
+#seperate data by pathway:
+hsv.3.1 <- pw.corr0.7.H3.1[which(pw.corr0.7.H3.1$pathway == "Herpes simplex virus 1 infection"), ]
+rcs.3.1 <- pw.corr0.7.H3.1[which(pw.corr0.7.H3.1$pathway == "Regulation of cellular response to stress"), ]
+tnf.3.1 <- pw.corr0.7.H3.1[which(pw.corr0.7.H3.1$pathway == "TNF signaling pathway"), ]
+hsv.3.3 <- pw.corr0.7.H3.3[which(pw.corr0.7.H3.3$pathway == "Herpes simplex virus 1 infection"), ]
+rcs.3.3 <- pw.corr0.7.H3.3[which(pw.corr0.7.H3.3$pathway == "Regulation of cellular response to stress"), ]
+tnf.3.3 <- pw.corr0.7.H3.3[which(pw.corr0.7.H3.3$pathway == "TNF signaling pathway"), ]
+
+corr.hsv <- rbind(hsv.3.1, hsv.3.3)
+corr.rcs <- rbind(rcs.3.1, rcs.3.3)
+corr.tnf <- rbind(tnf.3.1, tnf.3.3)
+
+# order factors levels by correlation:
+hsv.sum <- hsv.3.1$R + hsv.3.3$R
+rcs.sum <- rcs.3.1$R + rcs.3.3$R
+tnf.sum <- tnf.3.1$R + tnf.3.3$R
+
+corr.hsv <- mutate(corr.hsv, symbol = fct_relevel(symbol, hsv.sum %>% sort %>% names))
+corr.rcs <- mutate(corr.rcs, symbol = fct_relevel(symbol, rcs.sum %>% sort %>% names))
+corr.tnf <- mutate(corr.tnf, symbol = fct_relevel(symbol, tnf.sum %>% sort %>% names))
+```
+
+---
+
+The correlation of genes with histone acetylation were then plotted for each 
+pathway separately.
+
+```{r plot.hsv, fig.height = 6, fig.width = (nrow(corr.hsv) / 3)}
+ggplot() +
+  geom_col(data = corr.hsv, aes(x = symbol, y = R, fill = experiment), position = "dodge") +
+  facet_wrap(~ pathway) +
+  labs(x = "gene") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  scale_fill_manual(values = c("#FFCC33", "#CC3366"))
+```
+
+```{r plot.rcs, fig.height = 6, fig.width = (nrow(corr.rcs) / 3)}
+ggplot() +
+  geom_col(data = corr.rcs, aes(x = symbol, y = R, fill = experiment), position = "dodge") +
+  facet_wrap(~ pathway) +
+  labs(x = "gene") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  scale_fill_manual(values = c("#FFCC33", "#CC3366"))
+```
+
+```{r plot.tnf, fig.height = 6, fig.width = (nrow(corr.tnf) / 3)}
+ggplot() +
+  geom_col(data = corr.tnf, aes(x = symbol, y = R, fill = experiment), position = "dodge") +
+  facet_wrap(~ pathway) +
+  labs(x = "gene") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  scale_fill_manual(values = c("#FFCC33", "#CC3366"))
+
+```
+
+---
+
+References - packages
+---------------------
+
+```{r packages, echo=FALSE, results='asis'}
+cite_packages()
+```
+
+---
+
+Session Information
+-------------------
+
+The following versions of R and R packages were used to generate the report
+above:
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```

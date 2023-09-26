@@ -1,0 +1,253 @@
+---
+title: "Enrichment Analysis of H3K27ac peaks III"
+output: html_document
+---
+
+```{r simulation_options, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(report)
+library(stringr)
+library(ChIPseeker)
+library(DESeq2)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(RColorBrewer)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(GenomicFeatures)
+opts_chunk$set(fig.width = 10, fig.height = 10, dpi = 72,
+               warning = FALSE, message = FALSE, prompt = TRUE, cache = FALSE)
+set.seed(123)
+```
+last changed: `r Sys.Date()`
+
+---
+
+Feature annotation of H3K27ac peaks
+===
+
+## Data processing
+
+Load the `rlog` transformed DESeq data set and construct the required data 
+frames. The function `assay` returns the values and `colData` returns the 
+information about the experimental design.
+```{r data1}
+rlog.heat <- readRDS(file = "./../Significance_testing/Data/rlog_H3K27ac_sig.rds")
+head(rlog.heat)
+
+m.H3.ac <- assay(rlog.heat)
+head(m.H3.ac)
+
+info.H3.ac <- data.frame(colData(rlog.heat))
+paged_table(info.H3.ac)
+```
+
+---
+
+Next the `GRanges` object can be constructed using the `rownames` of the DESeq 
+data set, which contain information about the location of each peak.
+```{r GR}
+chr <- str_split_i(rownames(m.H3.ac), ":", 1)
+pos <- str_split_i(rownames(m.H3.ac), ":", 2)
+start <- as.integer(str_split_i(pos, "-", 1))
+end <- as.integer(str_split_i(rownames(m.H3.ac), "-", 2))
+
+peaks.H3ac <- GRanges(seqnames = chr, 
+                        ranges =IRanges(start = start, end = end))
+head(peaks.H3ac)
+
+saveRDS(peaks.H3ac, "./Data/peaks_H3ac.rds")
+```
+
+---
+
+To visualize the distance to TSS the by cluster, a `list` containing a entry for  
+each cluster with the corresponding peaks is required. Thus, the clustering 
+results are loaded and used to filter the `GRanges` object.
+```{r clus_4}
+kmeans.k3 <- readRDS("./../Clustering/Data/kmeans.rds")
+
+lapply(kmeans.k3, head)
+
+clus.kmeans <- melt(kmeans.k3$cluster)
+clus.kmeans <- cbind(clus.kmeans, 1:nrow(clus.kmeans))
+colnames(clus.kmeans) <- c("cluster", "ind")
+clus.kmeans <- clus.kmeans[order(clus.kmeans[, "cluster"]), ]
+
+paged_table(clus.kmeans)
+
+ind.cluster1 <- clus.kmeans[which(clus.kmeans[, "cluster"] == 1), "ind"]
+ind.cluster2 <- clus.kmeans[which(clus.kmeans[, "cluster"] == 2), "ind"]
+ind.cluster3 <- clus.kmeans[which(clus.kmeans[, "cluster"] == 3), "ind"]
+
+peaks.k1 <- peaks.H3ac[ind.cluster1, ]
+peaks.k2 <- peaks.H3ac[ind.cluster2, ]
+peaks.k3 <- peaks.H3ac[ind.cluster3, ]
+
+peaks <- list(cluster_1 = peaks.k1, cluster_2 = peaks.k2, 
+              cluster_3 = peaks.k3)
+```
+
+---
+
+## Average distance to TSS
+
+The `GRanges` list can then be used to plot the average distance to the TSS by 
+cluster.
+```{r AvgProf}
+hg38 <- TxDb.Hsapiens.UCSC.hg38.knownGene
+promoter <- getPromoters(TxDb = hg38, upstream=3000, downstream=3000)
+tagM.peaks <- lapply(peaks, getTagMatrix, windows=promoter)
+
+plotAvgProf(tagM.peaks, TxDb = hg38, xlim=c(-3000, 3000), 
+             xlab = "Genomic Region (5'->3')", ylab = "Peak Count") +
+  scale_color_manual(values = brewer.pal(n = 3, name = "Dark2"))
+```
+
+---
+
+## Feature annotation
+
+Next, the peaks were annotated to genes using `annotatePeak` and all known human 
+genes. The resulting object was then plotted with `plotAnnoBar`, to visualize the 
+distribution of features among peaks.
+```{r anno}
+anno.list <- lapply(peaks, annotatePeak, TxDb = hg38, 
+                         tssRegion=c(-3000, 3000), verbose=FALSE)
+
+plotAnnoBar(anno.list)
+```
+
+---
+
+Enrichment Analysis
+===
+
+## Data processing
+
+For the enrichment analysis the peaks were annotated to only coding genes within 
+a range of -1 to 1 kb from the transcription start site (TSS). For this the 
+peaks are annotated to using only the protein coding genes.
+```{r anno.cod}
+TxDb.protein.coding <- loadDb( file="./Data/TxDb.protein.coding.sqlite")
+seqlevelsStyle(TxDb.protein.coding) <- "UCSC"
+
+peak.coding <- lapply(peaks, annotatePeak, TxDb = TxDb.protein.coding, 
+                      tssRegion = c(-3000, 3000), verbose=FALSE)
+```
+
+---
+
+Next, the following function was used to translate the ENSEMBL identifiers to 
+ENTREZID.
+```{r ID}
+# generate required structure:
+conv2table<-function(x){
+  eg = bitr(x@anno$geneId, fromType="ENSEMBL", toType="SYMBOL", OrgDb="org.Hs.eg.db")
+  ez = bitr(x@anno$geneId, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+  anno.table<-x@anno
+  #add gene symbols
+  mx<-match(anno.table$geneId, eg$ENSEMBL)
+  anno.table$gene_symbol<-eg[mx,"SYMBOL"]
+  #add gene entrezID
+  mx<-match(anno.table$geneId, ez$ENSEMBL)
+  anno.table$gene_entrez<-ez[mx,"ENTREZID"]
+  
+  res.table<-cbind(
+    chr=as.vector(seqnames(anno.table)),
+    start=start(anno.table),
+    end=end(anno.table),
+    name=anno.table$name,
+    peak.p_adj=anno.table$qValue,
+    strand=rep(".", length(anno.table)),
+    genome_anno=anno.table$annotation,
+    gene_symbol=anno.table$gene_symbol,
+    gene_entrez=anno.table$gene_entrez,
+    distanceToTSS=anno.table$distanceToTSS,
+    transcriptId=anno.table$transcriptId,
+    geneId_ensembl=anno.table$geneId)
+}
+
+peak.coding.ID <- lapply(peak.coding, function(n) conv2table(n))
+lapply(peak.coding.ID, head)
+```
+
+---
+
+The resulting list was then filtered for peaks which are within a range of -1 to 
+1 kb from the TSS.
+```{r heat}
+peak.coding.1kb <- lapply(peak.coding.ID, function(x) 
+  filter(as.data.frame(x), 
+         abs(as.integer(as.data.frame(x)$distanceToTSS)) <= 1000))
+
+lapply(peak.coding.1kb, head)
+
+saveRDS(peak.coding.1kb, file = "./Data/peaks_H3ac_cod1kb.rds")
+
+names(peak.coding.1kb) <- c("1", "2", "3")
+cod.genes.1kb <- lapply(peak.coding.1kb, function(i) as.data.frame(i)$gene_entrez)
+```
+
+---
+
+## Reactome pathway analysis enrichment analysis
+
+Finally, the filtered list with the coding genes can be used for an enrichment 
+analysis using the function `enrichPathway`, which can be plotted using 
+`dotplot`.
+```{r Reactome, fig.width = 10, fig.height = 18}
+comp.Reac <- compareCluster(geneCluster = cod.genes.1kb,
+                            fun = "enrichPathway",
+                            pvalueCutoff = 0.05,
+                            pAdjustMethod = "BH")
+
+comp.Reac %>% as.data.frame() %>% paged_table()
+
+dotplot(comp.Reac, showCategory = 10, 
+        title = "Reactome Pathway Enrichment Analysis (coding genes)")
+```
+
+---
+
+## Gene Ontology enrichment analysis
+
+Exactly the same as above can be done with the function `enrichGO`.
+```{r GO, fig.width = 10, fig.height = 18}
+comp.GO <- compareCluster(geneCluster = cod.genes.1kb,
+                          fun = "enrichGO",
+                          OrgDb = org.Hs.eg.db,
+                          ont = "BP",
+                          readable = T,
+                          pvalueCutoff = 0.05,
+                          pAdjustMethod = "BH")
+
+comp.GO %>% as.data.frame() %>% paged_table()
+
+dotplot(comp.GO, showCategory = 10, 
+        title = "GO Enrichment Analysis (coding genes)")
+```
+---
+
+References - packages
+---------------------
+
+```{r packages, echo=FALSE, results='asis'}
+cite_packages()
+```
+
+---
+
+Session Information
+-------------------
+
+The following versions of R and R packages were used to generate the report
+above:
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```

@@ -1,0 +1,91 @@
+---
+title: "Significance testing for H3K27ac peaks II"
+output: html_document
+---
+
+```{r simulation_options, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(report)
+library(DESeq2)
+library(pheatmap)
+library(RColorBrewer)
+library(ggplot2)
+library(reshape2)
+opts_chunk$set(dpi = 72,
+               warning = FALSE, message = FALSE, prompt = TRUE, cache = FALSE)
+set.seed(123)
+```
+last changed: `r Sys.Date()`
+
+---
+
+## Significance testing (Wald)
+
+Since the time points 0 hpi and 2 hpi showed the most difference in the PCA (see:
+LRT/Significance_testing), the corresponding samples were filtered out. For this 
+the same peaks are loaded as generated in the significance testing for LRT. 
+After filtering a new DESeq data set was generated, only containing the samples 
+for 0 and 2 hpi.
+```{r data1}
+rlog.H3ac <- readRDS(file = "./../../1_LRT/Significance_testing/Data/rlog_H3K27ac.rds")
+head(rlog.H3ac)
+
+H3ac.raw <- readRDS(file = "./../../1_LRT/Significance_testing/Data/raw_H3K27ac.rds")
+head(H3ac.raw)
+
+m.raw <- assay(H3ac.raw)
+head(m.raw)
+
+info.raw <- data.frame(colData(H3ac.raw))
+paged_table(info.raw)
+
+info.raw.02hpi <- info.raw[which(info.raw$time == 0 | info.raw$time == 2), ]
+
+m.raw.02hpi <- m.raw[, rownames(info.raw.02hpi)]
+
+dds.02hpi <- DESeqDataSetFromMatrix(m.raw.02hpi, 
+                                    info.raw.02hpi, 
+                                    design = ~ construct + replica + time)
+head(dds.02hpi)
+```
+
+---
+
+To find significant peaks a Wald pairwise significance test was used. The output 
+was then used to filter the rlog data for significant peaks (adjusted p value 
+<= 0.05).
+```{r Wald}
+dds.Wald <- DESeq(dds.02hpi, test = "Wald")
+head(dds.Wald)
+
+res <- results(dds.Wald)
+head(res)
+
+res.sig <- res[which(res$padj <= 0.05), ]
+
+rlog.H3ac.sig <- rlog.H3ac[rownames(res.sig), ]
+
+saveRDS(rlog.H3ac.sig, file = "./Data/rlog_H3K27ac_sig.rds")
+```
+
+---
+
+References - packages
+---------------------
+
+```{r packages, echo=FALSE, results='asis'}
+cite_packages()
+```
+
+---
+
+Session Information
+-------------------
+
+The following versions of R and R packages were used to generate the report
+above:
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```

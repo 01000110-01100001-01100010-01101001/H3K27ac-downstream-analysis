@@ -1,0 +1,160 @@
+---
+title: "Enrichment Analysis of H3K27ac peaks (enhancer)"
+output: html_document
+---
+
+```{r simulation_options, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(report)
+library(GenomicRanges)
+library(rtracklayer)
+library(ChIPseeker)
+library(tidyverse)
+library(clusterProfiler)
+
+opts_chunk$set(fig.width = 10, fig.height = 10, dpi = 72,
+               warning = FALSE, message = FALSE, prompt = TRUE, cache = FALSE)
+set.seed(123)
+```
+last changed: `r Sys.Date()`
+
+---
+
+Annotation of H3K27ac peaks to enhancers
+===
+
+## Load data
+
+To annotate the peaks to the corresponding enhacner regions/genes the list with 
+all peaks is required as well as a list containing all enhancer target genes and 
+regions. The annotation list was then filtered for only high scoring targets.
+```{r data1}
+peaks <- readRDS("./Data/peaks_H3K27ac.rds")
+head(peaks)
+
+GH.region <- import("./Data/GeneHancer_regions.bed")
+head(GH.region)
+
+GH.anno.txt <- read.table("./Data/GeneHancer_annotation.txt", header = T)
+head(GH.anno.txt)
+
+# filter for high scores in alignment:
+GH.anno.elite <- GH.anno.txt[which(GH.anno.txt$is_elite == 1), ]
+paged_table(GH.anno.elite)
+```
+
+---
+
+## Find enhancer regions and annotate gene IDs
+
+Next, these list were used to find the corresponding enhancers using the first 
+list (`GH.region`) with the function `findOverlaps`. Then the target genes were 
+annotated using the second list (`GH.anno.elite`).
+```{r anno.ehcr}
+enhcr.H3ac <- peaks
+
+for (x in 1:4) {
+  curr.peaks <- peaks[[x]]
+  hits <- findOverlaps(curr.peaks, subject = GH.region)
+  overlap.H3ac <- peaks[[x]][hits@from, ]
+  mcols(overlap.H3ac)$GHid <- mcols(GH.region[hits@to, "name"])
+  df.over <- as.data.frame(overlap.H3ac)
+  mcols(overlap.H3ac)$symbol <- NA
+  ind <- intersect(df.over$name, GH.anno.elite$GHid)
+  mcols(overlap.H3ac)[which(df.over$name %in% ind), "symbol"] <- 
+    GH.anno.elite[which(GH.anno.elite$GHid %in% ind), "symbol"]
+  mcols(overlap.H3ac)[which(df.over$name %in% ind), "score"] <- 
+    GH.anno.elite[which(GH.anno.elite$GHid %in% ind), "combined_score"]
+  enhcr.H3ac[[x]] <- overlap.H3ac
+}
+
+saveRDS(enhcr.H3ac, "./Data/Enhancer2gene.rds")
+
+head(enhcr.H3ac)
+```
+
+---
+
+Since ENTREZ IDs are required to perform the enrichment analysis these were 
+added taking the gene symbols with the function `bitr`:
+```{r entrezID}
+enhcr.ENTREZ <- lapply(enhcr.H3ac, function(n) {
+  bitr(n@elementMetadata$symbol, 
+       fromType="SYMBOL", 
+       toType="ENTREZID", 
+       OrgDb="org.Hs.eg.db")
+})
+
+head(enhcr.ENTREZ)
+```
+
+---
+
+Enrichment analysis of H3K27ac enhancer peaks
+===
+
+## Reactome Pathway enrichment analysis
+
+Finally, the filtered list with the coding genes can be used for an enrichment 
+analysis using the function `enrichPathway`, which can be plotted using 
+`dotplot`.
+```{r IDs}
+# Reactome Enrichment:
+names(enhcr.ENTREZ) <- 1:4 %>% as.character()
+genes <- lapply(enhcr.ENTREZ, function(i) as.data.frame(i)$ENTREZID)
+
+PA.enhcr <- compareCluster(geneCluster = genes,
+                           fun = "enrichPathway",
+                           pvalueCutoff = 0.05,
+                           pAdjustMethod = "BH")
+
+PA.enhcr %>% as.data.frame() %>% paged_table()
+
+dotplot(PA.enhcr, 
+        showCategory = 10, 
+        title = "Reactome Pathway Enrichment Analysis (Enhancer)")
+```
+
+---
+
+## Gene Ontology enrichment analysis
+
+Exactly the same as above can be done with the function `enrichGO`.
+```{r GO}
+# GO Enrichment:
+GO.enhcr <- compareCluster(geneCluster = genes,
+                           fun = "enrichGO",
+                           OrgDb = org.Hs.eg.db,
+                           ont = "BP",
+                           readable = T,
+                           pvalueCutoff = 0.05,
+                           pAdjustMethod = "BH")
+
+GO.enhcr %>% as.data.frame() %>% paged_table()
+
+dotplot(GO.enhcr, 
+        showCategory = 10, 
+        title = "Gene Ontology Enrichment Analysis (Enhancer)")
+```
+
+---
+
+References - packages
+---------------------
+
+```{r packages, echo=FALSE, results='asis'}
+cite_packages()
+```
+
+---
+
+Session Information
+-------------------
+
+The following versions of R and R packages were used to generate the report
+above:
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```

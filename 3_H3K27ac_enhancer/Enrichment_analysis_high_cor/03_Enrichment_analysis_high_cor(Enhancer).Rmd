@@ -1,0 +1,130 @@
+---
+title: "Enrichment Analysis of H3K27ac peaks (enhancer) with high correlation"
+output: html_document
+---
+
+```{r simulation_options, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(report)
+library(GenomicRanges)
+library(rtracklayer)
+library(ChIPseeker)
+library(tidyverse)
+library(clusterProfiler)
+
+opts_chunk$set(fig.width = 10, fig.height = 10, dpi = 72,
+               warning = FALSE, message = FALSE, prompt = TRUE, cache = FALSE)
+set.seed(123)
+```
+last changed: `r Sys.Date()`
+
+---
+
+Enrichment analysis H3K27ac enhancer (high correlation)
+===
+
+## Data processing
+
+To identify those enhancers with either high positive (R >= 0.7) or high 
+negative (R <= -0.7) correlation the data frame containing those information 
+was loaded and filtered.
+```{r data1}
+corr.enhcr <- readRDS("./../Compare_H3K27ac_RNAseq/Data/data.cor.rds")
+
+head(corr.enhcr)
+
+corr.enhcr.0.7 <- corr.enhcr[which(corr.enhcr$U2OS31 %>% abs() >= 0.7 | 
+                                     corr.enhcr$U2OS33 %>% abs() >= 0.7), ]
+
+paged_table(corr.enhcr.0.7)
+```
+
+---
+
+In the next step, the gene IDs were translated to ENTERZ IDs, which are required 
+for the enrichment analysis. These IDs were then added to the correlation data 
+frame via the function `inner_join`, also removing duplicate entries.
+```{r IDs}
+ENTREZ <- bitr(corr.enhcr.0.7$ENSG, 
+                 fromType="ENSEMBL", 
+                 toType="ENTREZID", 
+                 OrgDb="org.Hs.eg.db")
+colnames(ENTREZ) <- c("ENSG", "ID")
+
+enhcr.ID <- inner_join(corr.enhcr, ENTREZ, multiple = "first") 
+```
+
+---
+
+Since the enrichment requires a list with the genes ordered by cluster, this was 
+done as follows:
+```{r list.clus}
+list.c <- list("1" = 1, "2" = 2, "3" = 3, "4" = 4)  
+list.genes <- lapply(list.c, function(x){
+  enhcr.ID[which(enhcr.ID$cluster == x), "ID"]
+}) 
+```
+
+---
+
+## Reactome Pathway enrichment analysis
+
+Finally, the filtered list with the coding genes can be used for an enrichment 
+analysis using the function `enrichPathway`, which can be plotted using 
+`dotplot`.
+```{r Reac, fig.width = 10, fig.height = 18}
+# Reactome Enrichment:
+PA.enhcr <- compareCluster(geneCluster = list.genes,
+                           fun = "enrichPathway",
+                           pvalueCutoff = 0.05,
+                           pAdjustMethod = "BH")
+
+PA.enhcr %>% as.data.frame() %>% paged_table()
+
+dotplot(PA.enhcr, 
+        showCategory = 10, 
+        title = "Reactome Pathway Enrichment Analysis (Enhancer)")
+```
+
+---
+
+## Gene Ontology enrichment analysis
+
+Exactly the same as above can be done with the function `enrichGO`.
+```{r GO, fig.width = 10, fig.height = 18}
+GO.enhcr <- compareCluster(geneCluster = list.genes,
+                           fun = "enrichGO",
+                           OrgDb = org.Hs.eg.db,
+                           ont = "BP",
+                           readable = T,
+                           pvalueCutoff = 0.05,
+                           pAdjustMethod = "BH")
+
+GO.enhcr %>% as.data.frame() %>% paged_table()
+
+dotplot(GO.enhcr, 
+        showCategory = 10, 
+        title = "Gene Ontology Enrichment Analysis (Enhancer)")
+```
+
+---
+
+References - packages
+---------------------
+
+```{r packages, echo=FALSE, results='asis'}
+cite_packages()
+```
+
+---
+
+Session Information
+-------------------
+
+The following versions of R and R packages were used to generate the report
+above:
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```

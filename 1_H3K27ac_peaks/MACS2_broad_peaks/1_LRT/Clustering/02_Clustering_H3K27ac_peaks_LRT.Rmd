@@ -1,0 +1,166 @@
+---
+title: "Clustering of H3K27ac peaks II"
+output: html_document
+---
+
+```{r simulation_options, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(report)
+library(DESeq2)
+library(pheatmap)
+library(RColorBrewer)
+library(ggplot2)
+library(reshape2)
+opts_chunk$set(fig.width = 10, fig.height = 10, dpi = 72,
+               warning = FALSE, message = FALSE, prompt = TRUE, cache = FALSE)
+set.seed(123)
+```
+last changed: `r Sys.Date()`
+
+---
+
+Hierarchical Clustering
+===
+
+Load the `rlog` transformed DESeq data set and construct the required data 
+frames. The function `assay` returns the values and `colData` returns the 
+information about the experimental design.
+```{r data1}
+rlog.heat <- readRDS(file = "./../Significance_testing/Data/rlog_H3K27ac_sig.rds")
+head(rlog.heat)
+
+m.H3.ac <- assay(rlog.heat)
+head(m.H3.ac)
+info.H3.ac <- data.frame(colData(rlog.heat))
+paged_table(info.H3.ac)
+```
+
+---
+
+Next this data can be used to perform hierarchical clustering, which is 
+implemented in `pheatmap`. `colorRampPallette` was used to change the annotation 
+color.
+```{r hier_clus}
+col <- colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(100)
+ann.col <- list(construct = c(U2OS31 = "#FFCC33", U2OS33 = "#CC3366"))
+
+heat.hieracial <- pheatmap(m.H3.ac, 
+                  cluster_cols = F, 
+                  show_rownames = F, 
+                  scale = "row", 
+                  color = col,
+                  annotation_col = info.H3.ac[, c("construct", "time")],
+                  annotation_colors = ann.col)
+```
+
+---
+
+Kmeans Clustering
+===
+
+To get a better separation of the data, kmeans clustering was performed. Since
+the H3K27ac data was yielded from two separate constructs U2OS31 (histone H3.1) 
+and U2OS33 (histone H3.3), the data was separated by construct and scaled to 
+Z-scores using the function `scale`.
+```{r data2}
+m.H3.1 <- m.H3.ac[, info.H3.ac$construct == "U2OS31"]
+m.H3.3 <- m.H3.ac[, info.H3.ac$construct == "U2OS33"]
+
+norm.m.H3.1 <- t(scale(t(m.H3.1)))
+norm.m.H3.3 <- t(scale(t(m.H3.3)))
+
+norm.m.H3 <- cbind(norm.m.H3.1, norm.m.H3.3)
+```
+
+---
+
+Next, `kmeans` was used to perform the clustering and a factor indicating the 
+clusters was added to each of the scaled matrices. The clustering for
+`centers = 5` (5 cluster) yielded the best result, as more clusters divided 
+data with a similar course.
+```{r kmeans}
+clus.kmeans <- kmeans(norm.m.H3, 4)
+
+lapply(clus.kmeans, head)
+
+saveRDS(clus.kmeans, "./Data/kmeans.rds")
+
+m.kmeans <- cbind(norm.m.H3, cluster = as.factor(clus.kmeans$cluster))
+m.kmeans <- m.kmeans[order(m.kmeans[, "cluster"]), ]
+
+m.kmeans.H31 <- m.kmeans[, c(1:10, 23)]
+m.kmeans.H33 <- m.kmeans[, 11:23]
+```
+
+---
+
+To visualize the clustering a heatmap was plotted using `pheatmap`. The functions 
+`colorRampPalette` and `brewer.pal` were used to generate the color for the 
+annotations and Z-values, respectively.
+```{r heat, fig}
+col <- colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(100)
+col2 <- brewer.pal(n = 8, name = "Dark2")
+clus.col <- c("1" = col2[1], "2" = col2[2], "3" = col2[3], "4" = col2[4])
+ann.col2 <- list(construct = c(U2OS31 = "#FFCC33", U2OS33 = "#CC3366"), cluster = clus.col[1:4])
+
+heat.kmeans.H31 <- pheatmap(m.kmeans.H31[ ,-ncol(m.kmeans.H31)],
+                        cluster_rows = F,
+                        cluster_cols = F,
+                        show_rownames = F, 
+                        color = col,
+                        annotation_col = info.H3.ac[, c("construct", "time")],
+                        annotation_row = data.frame(cluster = as.factor(m.kmeans[ ,"cluster"])),
+                        annotation_colors = ann.col2)
+  
+heat.kmeans.H33 <- pheatmap(m.kmeans.H33[ ,-ncol(m.kmeans.H33)],
+                        cluster_rows = F,
+                        cluster_cols = F,
+                        show_rownames = F, 
+                        color = col,
+                        annotation_col = info.H3.ac[, c("construct", "time")],
+                        annotation_row = data.frame(cluster = as.factor(m.kmeans[, "cluster"])),
+                        annotation_colors = ann.col2)
+```
+
+---
+
+Lastly, the cluster centroids (Z-scores) were plotted separately to visualize 
+the change in H3K27ac over time between the two constructs.
+```{r Z_cen}
+kmeans <- melt(clus.kmeans$centers)
+ind <- match(kmeans$Var2, rownames(info.H3.ac))
+data.kmeans <- cbind(kmeans, info.H3.ac[ind, c("time", "construct")])
+colnames(data.kmeans) <- c("cluster", "name", "Z_score", "time", "construct")
+
+paged_table(data.kmeans)
+  
+ggplot(data.kmeans) + 
+  geom_point(aes(x = time, y = Z_score, color = construct), size = 1) +
+  stat_summary(aes(x = time, y = Z_score, color = construct), fun = mean, geom = "line", linewidth = 1) +
+  facet_grid(rows = data.kmeans$cluster) +
+  scale_color_manual(values = c("#FFCC33", "#CC3366")) +
+  theme_bw() +
+  labs(title = "z-scores for H3K27ac after infection in hours", y = "z-scores")
+```
+
+---
+
+References - packages
+---------------------
+
+```{r packages, echo=FALSE, results='asis'}
+cite_packages()
+```
+
+---
+
+Session Information
+-------------------
+
+The following versions of R and R packages were used to generate the report
+above:
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```

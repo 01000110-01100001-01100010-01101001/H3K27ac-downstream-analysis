@@ -1,0 +1,140 @@
+---
+title: "Enrichment Analysis of differentially expressed genes"
+output: html_document
+---
+
+```{r simulation_options, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(report)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(dplyr)
+library(reshape2)
+library(GenomicFeatures)
+library(DESeq2)
+
+opts_chunk$set(fig.width = 10, fig.height = 10, dpi = 72,
+               warning = FALSE, message = FALSE, prompt = TRUE, cache = FALSE)
+set.seed(123)
+```
+last changed: `r Sys.Date()`
+
+---
+
+Enrichment Analysis
+===
+
+## Data processing
+
+First, the rlog transformed data is required.
+```{r anno.genes}
+dss.RNAseq <- readRDS(file = "./../Significance_testing/Data/rlog_RNAseq_sig.rds")
+head(dss.RNAseq)
+
+rlog.RNAseq <- assay(dss.RNAseq)
+head(rlog.RNAseq)
+
+info.RNAseq <- data.frame(colData(dss.RNAseq))
+paged_table(info.RNAseq)
+```
+
+---
+
+Next, the data was separated into the corresponding clustering. Furthermore, 
+the required gene IDs for the following enrichment analyses were added.
+```{r clus}
+# load clustering
+kmeans.k4 <- readRDS("./../Clustering/Data/kmeans.rds")
+lapply(kmeans.k4, head)
+
+clus.kmeans <- melt(kmeans.k4$cluster)
+clus.kmeans <- cbind(clus.kmeans, 1:nrow(clus.kmeans))
+colnames(clus.kmeans) <- c("cluster", "ind")
+clus.kmeans <- clus.kmeans[order(clus.kmeans[, "cluster"]), ]
+paged_table(clus.kmeans)
+
+# annotate genes to cluster as a list:
+ind.cluster1 <- clus.kmeans[which(clus.kmeans[, "cluster"] == 1), "ind"]
+ind.cluster2 <- clus.kmeans[which(clus.kmeans[, "cluster"] == 2), "ind"]
+ind.cluster3 <- clus.kmeans[which(clus.kmeans[, "cluster"] == 3), "ind"]
+ind.cluster4 <- clus.kmeans[which(clus.kmeans[, "cluster"] == 4), "ind"]
+
+genes.k1 <- rlog.RNAseq[ind.cluster1, ] %>% rownames()
+genes.k2 <- rlog.RNAseq[ind.cluster2, ] %>% rownames()
+genes.k3 <- rlog.RNAseq[ind.cluster3, ] %>% rownames()
+genes.k4 <- rlog.RNAseq[ind.cluster4, ] %>% rownames()
+
+genes <- list("1" = genes.k1, "2" = genes.k2, "3" = genes.k3, "4" = genes.k4)
+
+saveRDS(genes, file = "./Data/RNAseq_genes_cluster.rds")
+
+# get correct gene IDs:
+genes.ID <- lapply(genes, 
+                   bitr, 
+                   fromType = "ENSEMBL", 
+                   toType = "ENTREZID", 
+                   OrgDb = "org.Hs.eg.db")
+
+ID <- lapply(genes.ID, function(x) x[, 2])
+```
+
+---
+
+## Reactome pathway analysis enrichment analysis
+
+Finally, the filtered list with the coding genes can be used for an enrichment 
+analysis using the function `enrichPathway`, which can be plotted using 
+`dotplot`.
+```{r Reactome, fig.width = 10, fig.height = 18}
+PA.RNAseq <- compareCluster(geneCluster = ID,
+                                  fun = "enrichPathway",
+                                  pvalueCutoff = 0.05,
+                                  pAdjustMethod = "BH")
+
+PA.RNAseq %>% as.data.frame() %>% paged_table()
+
+dotplot(PA.RNAseq, showCategory = 10, 
+        title = "Reactome Pathway Enrichment Analysis (RNAseq)")
+```
+
+---
+
+## Gene Ontology enrichment analysis
+
+Exactly the same as above can be done with the function `enrichGO`.
+```{r GO, fig.width = 10, fig.height = 18}
+GO.RNAseq <- compareCluster(geneCluster = ID,
+                                  fun = "enrichGO",
+                                  OrgDb = org.Hs.eg.db,
+                                  ont = "BP",
+                                  readable = T,
+                                  pvalueCutoff = 0.05,
+                                  pAdjustMethod = "BH")
+
+GO.RNAseq %>% as.data.frame() %>% paged_table()
+
+dotplot(GO.RNAseq, showCategory = 10, 
+        title = "GO Enrichment Analysis (RNAseq)")
+```
+---
+
+References - packages
+---------------------
+
+```{r packages, echo=FALSE, results='asis'}
+cite_packages()
+```
+
+---
+
+Session Information
+-------------------
+
+The following versions of R and R packages were used to generate the report
+above:
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```

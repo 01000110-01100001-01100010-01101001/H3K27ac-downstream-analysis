@@ -1,0 +1,293 @@
+---
+title: "Compare H3K27ac with gene expression (RNAseq) III"
+output: html_document
+---
+
+```{r simulation_options, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(report)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(GenomicFeatures)
+library(enrichplot)
+library(RColorBrewer)
+library(dplyr)
+library(GenomicFeatures)
+library(DESeq2)
+library(ggplot2)
+library(reshape2)
+opts_chunk$set(fig.width = 10, fig.height = 10, dpi = 72,
+               warning = FALSE, message = FALSE, prompt = TRUE, cache = FALSE)
+set.seed(123)
+```
+last changed: `r Sys.Date()`
+
+---
+
+Gene Set Enrichment Analysis
+===
+
+## Data processing
+
+First, the results from the enrichment analysis are loaded with the gene coding 
+peaks within 1kb from the TSS. Here, a dataframe with one column containing the 
+geneIDs and the other one with the corresponding cluster is required.
+```{r data1}
+peak.list.cod.1kb <- readRDS("./../Enrichment_analysis/Data/peaks_H3ac_cod1kb.rds")
+lapply(peak.list.cod.1kb, head)
+
+names(peak.list.cod.1kb) <- 1:3
+df.peaks <- melt(peak.list.cod.1kb, variable.factor = T)
+colnames(df.peaks)[11] <- "cluster"
+paged_table(df.peaks)
+
+cluster <- select(df.peaks, cluster, geneId_ensembl)
+head(cluster)
+```
+
+---
+
+Next, the RNAseq results were loaded and transformed into a named vector.
+```{r data2}
+results <- read.delim("./Data/res_RNAseq.txt")
+head(results)
+
+gene.list <- results$log2FoldChange
+names(gene.list) <- results$ensembl_gene_id
+head(gene.list)
+```
+
+---
+
+These results were then filtered for only protein coding genes.
+```{r RNA_cod}
+results.cod <- results[which(results$gene_biotype == "protein_coding"), ]
+paged_table(results.cod)
+
+gene.list.cod <- results.cod$log2FoldChange
+names(gene.list.cod) <- results.cod$ensembl_gene_id
+```
+
+---
+
+Lastly, the log2 fold change and the adjusted p-values were used to calculate a 
+robust sorting score for the RNAseq gene list.
+```{r RNA_sort}
+log2fold.adj.p <- results.cod$log2FoldChange * (-log10(results.cod$padj))
+log2fold.adj.p[is.na(log2fold.adj.p)] <- 0
+names(log2fold.adj.p) <- results.cod$ensembl_gene_id
+log2fold.adj.p <- sort(log2fold.adj.p, decreasing = T)
+```
+
+---
+
+The sorted vector when then used to perform a GSEA.
+```{r GSEA}
+gse.adj.p <- GSEA(log2fold.adj.p, TERM2GENE = cluster, pvalueCutoff = 1, 
+                  pAdjustMethod = "BH", maxGSSize = 2000)
+
+gse.adj.p@result[, -11]
+
+col <- brewer.pal(n = 8, name = "Dark2")
+gseaplot2(gse.adj.p, geneSetID = 1:3, color = col[1:3])
+```
+
+---
+
+Correlation between H3K27ac and RNAseq
+===
+
+## Data processing
+
+First, the data (rlog-transformed DESeq data sets) were loaded for H3k27ac and 
+RNAseq. Here, the sample for Exp2 at 0 hpi was removed, because it was 
+identified as an outlier in a PCA (not shown).
+```{r data1.1}
+#RNAseq:
+load(file = "./Data/rlog_RNAseq.rda")
+
+m.RNAseq <- assay(rld) 
+info.RNAseq <- data.frame(colData(rld))
+info.RNAseq <- filter(info.RNAseq, name != "Exp2_0")
+paged_table(info.RNAseq)
+
+m.RNAseq <- m.RNAseq[, info.RNAseq$name]
+head(m.RNAseq)
+
+#H3K27ac:
+rlog.heat <- readRDS(file = "./../Significance_testing/Data/rlog_H3K27ac_sig.rds")
+
+info.H3ac <- data.frame(colData(rlog.heat))
+paged_table(info.H3ac)
+
+m.H3ac <- assay(rlog.heat)
+head(m.H3ac)
+```
+
+---
+
+Since the two experiments have different time points, the matrices need to be 
+filtered for the required time points. Then, the median over the replicates 
+can be calculated. For the H3K27ac the matrix was adittionally seperated by 
+construct.
+```{r m.cor}
+times <- c(0, 1, 2, 4)
+
+# RNAseq:
+m.RNAseq.median <- matrix(data = NA, ncol = 4, nrow = nrow(m.RNAseq))
+rownames(m.RNAseq.median) <- rownames(m.RNAseq)
+colnames(m.RNAseq.median) <- c("T0h", "T1h", "T2h", "T4h")
+
+for (t in 1:4) {
+  ind <- which(info.RNAseq[, "Time"] == times[t])
+  if (t == 1)
+    medians <- m.RNAseq[, ind]
+  else
+    medians <- apply(m.RNAseq[,  ind], 1, median)
+  m.RNAseq.median[, t] <- medians
+}
+
+saveRDS(m.RNAseq.median, "./Data/m_RNAseq_median.rds")
+head(m.RNAseq.median)
+
+# H3K27ac:
+ind.H3.1 <- which(info.H3ac$construct == "U2OS31")
+ind.H3.3 <- which(info.H3ac$construct == "U2OS33")
+
+m.H3.1ac <- m.H3ac[ ,ind.H3.1]
+m.H3.3ac <- m.H3ac[ ,ind.H3.3]
+
+m.H3.1ac.median <- matrix(data = NA, ncol = 4, nrow = nrow(m.H3.1ac))
+rownames(m.H3.1ac.median) <- rownames(m.H3.1ac)
+colnames(m.H3.1ac.median) <- c("T0h", "T1h", "T2h", "T4h")
+
+m.H3.3ac.median <- m.H3.1ac.median
+
+for (t in 1:4) {
+  t.0.H3.1 <- which(info.H3ac[ind.H3.1, "time"] == times[t])
+  medians <- apply(m.H3.1ac[,  t.0.H3.1], 1, median)
+  m.H3.1ac.median[, t] <- medians
+}
+
+for (t in 1:4) {
+  t.0.H3.3 <- which(info.H3ac[ind.H3.3, "time"] == times[t])
+  medians <- apply(m.H3.3ac[,  t.0.H3.3], 1, median)
+  m.H3.3ac.median[, t] <- medians
+}
+
+saveRDS(m.H3.1ac.median, "./Data/m_H3.1K27ac_median.rds")
+saveRDS(m.H3.3ac.median, "./Data/m_H3.3K27ac_median.rds")
+head(m.H3.1ac.median)
+head(m.H3.3ac.median)
+```
+
+---
+
+Further, the annotated peak list is required and needs to be sorted and filtered 
+to only contain genes/peaks contained in both experiments.
+```{r data1.3}
+peaks.cod <- readRDS("./../Enrichment_analysis/Data/peaks_H3ac_cod1kb.rds")
+lapply(peaks.cod, head)
+
+peaks <- rbind(peaks.cod[[1]], peaks.cod[[2]], peaks.cod[[3]])
+peaks <- mutate(peaks, peak_pos = paste0(peaks$chr, ":", peaks$start, "-", peaks$end))
+paged_table(peaks)
+
+peaks.RNAseq <- intersect(peaks$geneId_ensembl, rownames(m.RNAseq))
+
+peaks.both <- peaks[which(peaks$geneId_ensembl %in% peaks.RNAseq), ]
+
+m.H3.1ac.med.cod <- m.H3.1ac.median[peaks.both$peak_pos, ]
+m.H3.3ac.med.cod <- m.H3.3ac.median[peaks.both$peak_pos, ]
+m.RNAseq.med.cod <- m.RNAseq.median[peaks.both$geneId_ensembl, ]
+```
+
+---
+
+Next, the correlation was calculated for H3.1/H3.3 K27ac and RNAseq, as follows:
+```{r cor}
+# correlation for H3.1K27ac and RNAseq
+cor.H3.1ac.RNAseq <- c()
+
+for (i in 1:nrow(peaks.both)) {
+  curr.corr <- cor(m.H3.1ac.med.cod[i, ], m.RNAseq.med.cod[i, ], method = "pearson") 
+  cor.H3.1ac.RNAseq <- c(cor.H3.1ac.RNAseq, curr.corr)
+}
+names(cor.H3.1ac.RNAseq) <- rownames(m.RNAseq.med.cod)
+head(cor.H3.1ac.RNAseq)
+
+# correlation for H3.3K27ac and RNAseq
+cor.H3.3ac.RNAseq <- c()
+
+for (i in 1:nrow(peaks.both)) {
+  curr.corr <- cor(m.H3.3ac.med.cod[i, ], m.RNAseq.med.cod[i, ], method = "pearson")
+  cor.H3.3ac.RNAseq <- c(cor.H3.3ac.RNAseq, curr.corr)
+}
+names(cor.H3.3ac.RNAseq) <- rownames(m.RNAseq.med.cod)
+head(cor.H3.3ac.RNAseq)
+```
+
+---
+
+To plot the correlation between H3K27ac and RNAseq for each cluster the data was 
+transformed into a dataframe, containing the required factors/values. The 
+correlation was then plotted using `geom_density`.
+```{r plot}
+cor.H3ac.RNAseq.NAs <- data.frame(U2OS31 = cor.H3.1ac.RNAseq, 
+                                  U2OS33 = cor.H3.3ac.RNAseq, 
+                                  gene = rownames(m.RNAseq.med.cod), 
+                                  peak = rownames(m.H3.1ac.med.cod))
+cor.H3ac.RNAseq <- na.omit(cor.H3ac.RNAseq.NAs)
+
+cor.H3ac.RNAseq.NAs <- data.frame(U2OS31 = cor.H3.1ac.RNAseq, 
+                                  U2OS33 = cor.H3.3ac.RNAseq, 
+                                  gene = rownames(m.RNAseq.med.cod), 
+                                  peak = rownames(m.H3.1ac.med.cod))
+cor.H3ac.RNAseq <- na.omit(cor.H3ac.RNAseq.NAs)
+
+peak.pos.clus <- lapply(peaks.cod, function(x) 
+  mutate(x, peak_pos = paste0(x$chr, ":", x$start, "-", x$end))
+  )
+
+cor.cluster <- mutate(cor.H3ac.RNAseq, cluster = NA)
+
+for (step in 1:3) {
+  ind <- peak.pos.clus[[step]]$peak_pos
+  cor.cluster[which(cor.cluster$peak %in% ind), "cluster"] <- step
+}
+
+paged_table(cor.cluster)
+
+ggplot(cor.cluster) +
+  geom_density(aes(x = U2OS31, color = "U2OS31"), linewidth = 1.05) +
+  geom_density(aes(x = U2OS33, color = "U2OS33"), linewidth = 1.05) +
+  scale_color_manual(name = "construct",
+                     breaks = c("U2OS31", "U2OS33"),
+                     values = c("U2OS31" = "#FFCC33", "U2OS33" = "#CC3366")) +
+  labs(x = "correlation") +
+  coord_cartesian(ylim =  c(0.15, 0.7)) +
+  theme_bw() +
+  facet_grid(rows = cor.cluster$cluster)
+```
+
+---
+
+References - packages
+---------------------
+
+```{r packages, echo=FALSE, results='asis'}
+cite_packages()
+```
+
+---
+
+Session Information
+-------------------
+
+The following versions of R and R packages were used to generate the report
+above:
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```
